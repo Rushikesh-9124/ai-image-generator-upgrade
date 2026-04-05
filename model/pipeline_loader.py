@@ -4,18 +4,14 @@ model/pipeline_loader.py
 Rebuilt for v3:
 
 txt2img:
-  • RealVisXL V5.0  — photorealistic fine-tune of SDXL, best-in-class
-    for real human faces, skin texture, and prompt adherence
-  • SDXL Refiner   — final detail pass (pores, hair, fabric)
+  • RealVisXL V5.0  — photorealistic fine-tune of SDXL
+  • SDXL Refiner    — final detail pass (pores, hair, fabric)
   • DPM++ 2M Karras scheduler — sharpest at 30-40 steps
 
 img2img (REBUILT — was broken):
-  • ControlNet Canny  — locks edge structure of source image
-  • ControlNet Depth  — locks spatial depth/pose of source image
-  • Both run together via StableDiffusionXLControlNetImg2ImgPipeline
-  • This is why the old img2img produced irrelevant images: plain
-    img2img at strength > 0.5 effectively ignores the source. ControlNet
-    hard-constrains the spatial layout regardless of strength.
+  • ControlNet Canny + Depth via StableDiffusionXLControlNetImg2ImgPipeline
+  • Built with from_pipe() — the correct diffusers >=0.28 API,
+    version-proof across all future diffusers releases.
 
 Routes / response format: UNCHANGED.
 """
@@ -43,20 +39,9 @@ logger = logging.getLogger(__name__)
 #  Model identifiers
 # ─────────────────────────────────────────────────────────────────────────────
 
-# RealVisXL V5.0 — photorealistic SDXL fine-tune
-# Dramatically better than base SDXL for real human faces, accurate anatomy,
-# and prompt adherence. Lightning variant available for 4-step inference.
-REALVIS_ID      = "SG161222/RealVisXL_V5.0"
-
-# SDXL Refiner — unchanged, adds fine detail in the last denoising steps
-SDXL_REFINER_ID = "stabilityai/stable-diffusion-xl-refiner-1.0"
-
-# fp16-fixed VAE — prevents colour saturation drift
-SDXL_VAE_ID     = "madebyollin/sdxl-vae-fp16-fix"
-
-# ControlNet models for structure-preserving img2img
-# Canny: locks hard edges (hair, clothing outline, face structure)
-# Depth: locks spatial depth map (pose, foreground/background separation)
+REALVIS_ID          = "SG161222/RealVisXL_V5.0"
+SDXL_REFINER_ID     = "stabilityai/stable-diffusion-xl-refiner-1.0"
+SDXL_VAE_ID         = "madebyollin/sdxl-vae-fp16-fix"
 CONTROLNET_CANNY_ID = "diffusers/controlnet-canny-sdxl-1.0"
 CONTROLNET_DEPTH_ID = "diffusers/controlnet-depth-sdxl-1.0-small"
 
@@ -65,18 +50,18 @@ CONTROLNET_DEPTH_ID = "diffusers/controlnet-depth-sdxl-1.0-small"
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCHEDULER_MAP = {
-    "dpm++":    DPMSolverMultistepScheduler,
-    "euler_a":  EulerAncestralDiscreteScheduler,
-    "kdpm2_a":  KDPM2AncestralDiscreteScheduler,   # new: great for faces
-    "ddim":     DDIMScheduler,
+    "dpm++":   DPMSolverMultistepScheduler,
+    "euler_a": EulerAncestralDiscreteScheduler,
+    "kdpm2_a": KDPM2AncestralDiscreteScheduler,
+    "ddim":    DDIMScheduler,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Singleton storage
 # ─────────────────────────────────────────────────────────────────────────────
 
-_txt2img_pipe:   Optional[StableDiffusionXLPipeline]                    = None
-_refiner_pipe:   Optional[StableDiffusionXLImg2ImgPipeline]             = None
+_txt2img_pipe:    Optional[StableDiffusionXLPipeline]                   = None
+_refiner_pipe:    Optional[StableDiffusionXLImg2ImgPipeline]            = None
 _controlnet_pipe: Optional[StableDiffusionXLControlNetImg2ImgPipeline]  = None
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,7 +98,7 @@ def _configure_scheduler(pipe, name: str) -> None:
 
 
 def _optimise(pipe, device: str) -> None:
-    """Apply all memory/speed optimisations in the correct order."""
+    """Apply memory/speed optimisations in the correct order."""
     pipe.enable_attention_slicing(slice_size="auto")
     pipe.enable_vae_slicing()
     pipe.enable_vae_tiling()
@@ -123,7 +108,6 @@ def _optimise(pipe, device: str) -> None:
             pipe.enable_xformers_memory_efficient_attention()
             logger.info("    ✓ xformers enabled")
         except Exception:
-            # PyTorch ≥ 2.0 SDPA is a solid fallback
             try:
                 from diffusers.models.attention_processor import AttnProcessor2_0
                 pipe.unet.set_attn_processor(AttnProcessor2_0())
@@ -147,8 +131,8 @@ def load_pipelines(
     Load order (VRAM budget):
       1. Fixed VAE                    ~0.3 GB
       2. RealVisXL txt2img            ~6.5 GB  (fp16)
-      3. ControlNet × 2               ~2.5 GB  (canny + depth, fp16)
-      4. ControlNet img2img pipeline  ~0.1 GB  (shares UNet/VAE/encoders)
+      3. ControlNet x2                ~2.5 GB  (canny + depth, fp16)
+      4. ControlNet img2img pipeline  ~0.0 GB  (from_pipe — shares all weights)
       5. SDXL Refiner                 ~5.5 GB  (fp16) — optional
 
     Minimum VRAM: 10 GB (without refiner), 14 GB (with refiner)
@@ -168,18 +152,14 @@ def load_pipelines(
     vae = _load_vae(dtype)
 
     # ── 2. RealVisXL txt2img ─────────────────────────────────────────────────
+    # StableDiffusionXLPipeline has no safety checker — do not pass those kwargs.
     logger.info(f"  Loading RealVisXL ({REALVIS_ID}) ...")
-    safety_kwargs = {} if enable_safety else {
-        "safety_checker": None,
-        "requires_safety_checker": False,
-    }
     _txt2img_pipe = StableDiffusionXLPipeline.from_pretrained(
         REALVIS_ID,
         vae=vae,
         torch_dtype=dtype,
         use_safetensors=True,
         add_watermarker=False,
-        **safety_kwargs,
     ).to(device)
     _configure_scheduler(_txt2img_pipe, scheduler_name)
     _optimise(_txt2img_pipe, device)
@@ -195,24 +175,19 @@ def load_pipelines(
     ).to(device)
     logger.info("  ✓ ControlNet models loaded")
 
-    # ── 4. ControlNet img2img pipeline (shares weights from txt2img) ─────────
-    # This is the critical fix for img2img. StableDiffusionXLControlNetImg2ImgPipeline
-    # takes both the init image AND the controlnet conditioning simultaneously,
-    # so the model cannot drift away from the source structure even at high strength.
-    logger.info("  Building ControlNet img2img pipeline (shared UNet/VAE/encoders) ...")
-    _controlnet_pipe = StableDiffusionXLControlNetImg2ImgPipeline(
-        vae=_txt2img_pipe.vae,
-        text_encoder=_txt2img_pipe.text_encoder,
-        text_encoder_2=_txt2img_pipe.text_encoder_2,
-        tokenizer=_txt2img_pipe.tokenizer,
-        tokenizer_2=_txt2img_pipe.tokenizer_2,
-        unet=_txt2img_pipe.unet,
+    # ── 4. ControlNet img2img pipeline ───────────────────────────────────────
+    # from_pipe() is the correct diffusers >=0.28 API for building a sibling
+    # pipeline. It automatically shares VAE, UNet, text encoders, tokenizers,
+    # scheduler, and image_processor from the source pipeline — no manual
+    # constructor arguments, no version breakage.
+    logger.info("  Building ControlNet img2img pipeline via from_pipe() ...")
+    _controlnet_pipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pipe(
+        _txt2img_pipe,
         controlnet=[controlnet_canny, controlnet_depth],
-        scheduler=_txt2img_pipe.scheduler,
-        image_processor=_txt2img_pipe.image_processor,
-        requires_aesthetics_score=False,
-        force_zeros_for_empty_prompt=True,
-    ).to(device)
+    )
+    # from_pipe() inherits device placement from the source pipeline.
+    # Only the newly added ControlNet weights need explicit device placement.
+    _controlnet_pipe.controlnet = _controlnet_pipe.controlnet.to(device)
     _optimise(_controlnet_pipe, device)
     logger.info("  ✓ ControlNet img2img pipeline ready")
 
@@ -266,11 +241,11 @@ def get_controlnet_pipe() -> Optional[StableDiffusionXLControlNetImg2ImgPipeline
 def get_refiner_pipe()    -> Optional[StableDiffusionXLImg2ImgPipeline]:
     return _refiner_pipe
 
-# Keep old name for backward compat with any direct callers
-def get_base_pipe()       -> Optional[StableDiffusionXLPipeline]:
+# Backward-compat aliases
+def get_base_pipe()    -> Optional[StableDiffusionXLPipeline]:
     return _txt2img_pipe
 
-def get_img2img_pipe()    -> Optional[StableDiffusionXLControlNetImg2ImgPipeline]:
+def get_img2img_pipe() -> Optional[StableDiffusionXLControlNetImg2ImgPipeline]:
     return _controlnet_pipe
 
 
