@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual env
+venv/
+.env
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
+
+# Model files (VERY IMPORTANT)
+*.safetensors
+*.bin
+*.pt
+
+# Cache
+.cache/

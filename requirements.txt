@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  AI Image Generation Service v3.0 — Requirements
+#  Python 3.10+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+
+# ── PyTorch — install separately for your CUDA version ────────────────────────
+# CUDA 12.1:  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# CUDA 11.8:  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# CPU only:   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch>=2.1.0
+torchvision>=0.16.0
+
+# ── Diffusers stack ───────────────────────────────────────────────────────────
+# 0.27.2+ required for StableDiffusionXLControlNetImg2ImgPipeline
+diffusers==0.27.2
+transformers==4.40.1        # CLIP encoders + MiDaS depth estimation
+accelerate==0.29.3
+safetensors==0.4.3
+huggingface_hub==0.23.0
+
+# ── Memory efficiency ─────────────────────────────────────────────────────────
+# Match xformers to your exact torch + CUDA version:
+# pip install xformers --index-url https://download.pytorch.org/whl/cu121
+xformers>=0.0.25; sys_platform != "darwin"
+
+# ── Image processing ──────────────────────────────────────────────────────────
+Pillow==10.3.0
+numpy>=1.24.0
+
+# ── Depth estimation (MiDaS via transformers pipeline) ────────────────────────
+# Intel/dpt-hybrid-midas is downloaded automatically on first img2img request.
+# No extra install needed — transformers handles it.
+# If you want to pre-download: python -c "from transformers import pipeline; pipeline('depth-estimation', model='Intel/dpt-hybrid-midas')"
