@@ -100,6 +100,8 @@ class EnhancePromptResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}  # suppresses 'model_' namespace warning
+
     status:           str
     device:           str
     model_loaded:     bool
